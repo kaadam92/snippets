@@ -1,0 +1,174 @@
+# A tapasztalatokat összefoglaló snippet házi beadáshoz
+
+A fejlesztés során több akadályba, nehézségbe és furcsaságba is ütköztünk, ezeket hivatott összefoglalni ez a kis leírás.
+
+## A Qt Creator sajátosságai
+
+A Qt Creator bár egy elsőre igen purítán felületnek tűnik, egy meglehetősen jól átgondolt felületet ad a fejlesztéshez. Néhány anomália azonban itt is akad, bár ezek lehet nem általános jellegőek:
+
+  * Amikor furcsa fordítási hiábt kapunk, nem értjük, ohgy miről szól, és rá kattintva memóriatartalom nyilik meg, akkor a megoldás jó eséllyel a kézi *qmake* futtatás lesz a megoldás
+  * A QML fájlok nem mentődnek el automatikusan build-kor, erre jó eséllyel van beállítás, de elsőre furcsa lehet.
+  * A QML-ben eszközölt módosítások nem mindig jelennek meg fordítás után az UI-on, ellenben ha a grafikus szerkesztővel egy kicsit bizgetünk a felületen, akkor már igen.
+  * Ha több példányban futtatjuk a Qt Creatort, akkor csak az egyik ablak használhatja a debug konzolt
+
+### QML-ben automatikusan generálódó függvénynevek
+
+Amikor QML-ben létrehozunk egy modult, és azt példányosítjuk, akkor a modul signaljai megjelennek a felső rétegen is, pl a "valami" nevű signalból a példányosítás helyén lesz "onValami" nevű függvényhívás. Konrét példát találunk a SimpleTelemetryVisualiser-ben.
+
+```javascript
+    signal resetCommand;
+    signal accelerateCommand;
+    signal stopCommand;
+```
+
+Ezek a signalok jönnek létre a MainForm modlban, melyet a main.qml fájlban példányosítunk.
+
+```javascript
+    MainForm {
+        id: mainFormControl
+        anchors.fill: parent
+
+        // Az eseménykezelőkben tovább hívjuk az itteni signalokat a C++ oldal felé.
+        onResetCommand: {
+            resetCpp();
+        }
+        onAccelerateCommand: {
+            accelerateCommandCpp();
+        }
+        onStopCommand: {
+            stopCommandCpp();
+        }
+    }
+}
+```
+
+Itt pedig láthatóak a létrejövő függvényhívások a kész modulban. Érdekesség, hogy a modulban található signal első betűje automatikusan naggyá válzotik a függvényeknél, a többi karakter viszont case-sensitive, azaz a konkrét példát szemlélve, a *stopCommand* és a StopCommand* között nincs különbség, a *stopCommand* és a *stopcommand* viszont két különböző signal. Az, hogy ezek a függvénynevek, hogyan jönnek létre a signalokból, a szerzők előtt nem ismert, lézetésüket azonban tényként elfogadják.
+
+### QML vs .ui
+
+A Qt két gyökeresen eltérő módszerrel segíti grafikus felhasználói felületek gyors összeállítását. Az egyik az áltlaunk is tanult QML, mely javascript szerű leírással némi funkcionalitás megvalósításának is teret enged. Ez sok dolog elegáns megvalósítását biztosítja, hátrány azonban, hogy igen kevés előre gyártott elemből tudunk építkezni, nekünk kell megírni sok mindent. (Erre abszolút elemi példa, hogy nincsen pl. kör QML-ben, a megoldás az, hogy négyszöget csinál az amber, melynek a sarkai oldalhoszz/2 sugárral lekerekít.) Természetesen hatalmas potenciál van ebben a koncepcióban, azonban nagyon sok gyakorlást és rutint igényel, hogy az ember el tudja dönteni megfelelő módon, hogy mi az, amit QML-ben és mi az, amit C++-ban érdemes megvalósítani. A mi házi feladatunkban is valószínűleg sok olyan megoldás van, ami egy rutinos Qt programozó számára nevetségesen undorító, összetákolt munka, és tud rá sokkal elegánsabb és praktikusabb megoldást.
+
+Ezzel szemben a .ui egyszerű, xml alapú leírást biztosít, a messziről induló kezdő Qt felhsználó számára jobban átlátható, és nem ró a két oldal közti szeparációs terheket a felhasználóra. Sokkal több beépített elemből válogathatunk, ezekt ráadásul C++-ból is könnyebb elérni.
+
+Összegezve tehát azt mondanám, hogy nagyon jó a QML, de rutint igényel, ezzel szemben a *.ui* könnyebben átlátható első ránézésre , így kezdő felhsználók számára gyorsabb lehet.
+
+### Library-k használata QML-ben
+
+A legtöbb UI modul, melyet le tudunk tölteni internetről, a .ui stílusú leírást támogatja. Szerencsére ez nem akadályozza meg, hogy haszánljuk őket QML alatt is. Mi a [QCustomPlot](http://www.qcustomplot.com/index.php/introduction) nevű libraryt használtuk fel a a házi feladatunk során, amely nagyon igényes, lejes körő adatvizualizációt támogató csomag.
+
+Ahhoz, hogy fel tudujuk használni QML-ben létre kell hoznunk egy a modul menedzselő C++ objektumot. Ezek után ezt az objektumot be kell regisztálni QML objektumként.
+
+```c
+qmlRegisterType<CustomPlotItem>("CustomPlot", 1, 0, "CustomPlotItem");
+```
+
+Ha ezzel is kész vagyunk, akkor már csak példányosítani kell QML oldalon.
+
+```javascript
+  CustomPlotItem {
+      objectName: "customPlot"
+      id: customPlot
+      anchors.fill: parent
+      Component.onCompleted: initCustomPlot()
+      }
+```
+
+Innentől kezdve *customPlot* néven meg tudjuk találni C++ oldalról.
+
+### Hogyan érjünk el QML objektumokat C++ oldalról?
+
+Erre láthattunk példát a KontrolKupac mintaprojektben
+
+```c
+QQuickItem* MainWindowCppSide::findItemByName(const QString& name)
+{
+    Q_ASSERT(mainWindowObject != nullptr);
+    if (mainWindowObject->objectName() == name)
+    {
+        return mainWindowObject;
+    }
+    return findItemByName(mainWindowObject->children(), name);
+}
+
+QQuickItem* MainWindowCppSide::findItemByName(QObject *rootObject, const QString& name)
+{
+    Q_ASSERT(rootObject != nullptr);
+    if (rootObject->objectName() == name)
+    {
+        return (QQuickItem*)rootObject;
+    }
+    return findItemByName(rootObject->children(), name);
+}
+
+QQuickItem* MainWindowCppSide::findItemByName(QList<QObject*> nodes, const QString& name)
+{
+    for(int i = 0; i < nodes.size(); i++)
+    {
+        // Node keresése
+        if (nodes.at(i) && nodes.at(i)->objectName() == name)
+        {
+            return dynamic_cast<QQuickItem*>(nodes.at(i));
+        }
+        // Gyerekekben keresés
+        else if (nodes.at(i) && nodes.at(i)->children().size() > 0)
+        {
+            QQuickItem* item = findItemByName(nodes.at(i)->children(), name);
+            if (item)
+                return item;
+        }
+    }
+    // Nem találtuk.
+    return nullptr;
+}
+```
+
+Ez meglehetősen hosszú, ráadásul saját magunknak megírni nem is feltétlennül kellemes. E helyett használhatunk beépített függvényt:
+
+```c
+ auto mainWindowPtr = rootObject->findChild<QObject*>("MainWindow");
+ eventhandler.setMainWindowPtr(mainWindowPtr);
+```
+
+Ebben a kódrészletben használjuk a Qt által biztosított findChild függvényt, majd átadjuk az EventHandler osztályunknak a pointert az ablakra, hogy el tudjuk érni innen is a tartalmát.
+## A szoftver futtatása más számítógépen
+A fejlesztés utolsó fázisának nevezhető az ún. deployment, ami tulajdonképpen az elkészült szoftver használatra bocsájtása. Windows rendszeren ez annyit jelent, hogy a felhasználó számára biztosítjuk a futtatható bináris állományt (.exe) és az esetleges dinamikusan linkelt könyvtárakat (.dll).
+
+### Dinamikus linkelés
+
+Ez a módszer tűnik a legegyszerűbb megoldásnak: a release módon fordított alkalmazásunkhoz tartozó .exe fájlt kimásoljuk egy mappába és mellette elhelyezzük a szükséges .dll könyvtárakat. A kérdés csak az, hogy honnan lehet megtudni a szükséges fájlok listáját.
+
+Első megközelítésben megpróbáljuk lefuttatni a programunkat a célrendszeren és a windows hibaüzenetek alapján levadásszuk a hiányolt .dll fájlt. Általában a _--QT DIR--\Qt5.5.1\5.5\mingw492_32\bin_ mappában találhatóak. Ez a folyamat időigényes lehet, ha sok fájlt kell megtalálni, illetve a windows hibaüzenetek nem minden esetben írják ki a hiányzó fájl nevét, ekkor zsákutszába kerülünk, nem tudjuk mire lenne szükség.
+
+Erre a problémára a Qt telepítésekor a számítógépünkre került egy hasznos program, amit a _--QT DIR--\Qt5.5.1\5.5\mingw492_32\bin\windeployqt.exe_ helyen érhetünk el (angol leírás: http://doc.qt.io/qt-5/windows-deployment.html). 
+
+Windows parancssorból vagy az újabb powershellből futtatható ez a kis program. A _windeployqt.exe -?_ parancsal kérhetjük le a különféle paramétereket. A legegyszerűbb úgy eljráni, hogy létrehozunk egy mappát valahol a meghajtónkon, amibe bemásoljuk a release módon fordított .exe fájlunkat. Ez most legyen _E:\Dinamukus_ a példa kedvért. Ha a szoftver QML környezetet is használ, akkor szükségünk lesz a QML fájlokat tartalmazó mappa elérési útjára, ez most legyen _E:\GIT\Program\QML_ mappa.
+
+A következő utasítást végrehajtva a .exe fájlunk mellett megjelennek a szükséges .dll fájlok:
+```
+windeployqt.exe --release --qmldir E:\GIT\Program\QML E:\Dinamikus
+```
+
+Elvileg ezután más számítógépeken is futtatható lesz a programunk. Én sajnos ezután is kaptam két hibaüzenetet indításkor, ugyanakkor a program elindult és helyesen működött. A fejlesztés Win10 alatt történt, Win7 és Win8.1 rendszereken jelentkezett a két nem várt hibaüzenet.
+
+### Statikus linkelés
+
+Qt szoftverek esetén a felhasznált modulokt mennyiségétől függően viszonylag sok dll fájl szükséges a működéshez, ezért kíváncsiak voltunk, hogy van-e lehetőség egyetlen .exe fájlba, statikusan linkelni a könyvtárakat. 
+
+A Qt wiki oldalán találtam megoldást (https://wiki.qt.io/Building_a_static_Qt_for_Windows_using_MinGW), ugyanakkor így csak olyan projekteket lehet lefuttatni, amelyek __nem használnak QML környezetet__! A tapasztalat az volt, hogy futtatáskor a program elszállt, nem várt hibával. Miután a fordításkor a .pro Qt projekt fájlban hozzáadtam a CONFIG += consol beállítást (ezzel konzolt is fordítottam a programba) a hibajelzések megjelentek a konzolon, melyek szerint a QML könyvtárak hiányoztak. A következőkben egy rövid leírásban bemutatom, hogy miként jártam el a fordítás során.
+
+#### Első lépés: statikus Qt fordítása
+A fent linkelt oldalon van egy hasznos powershell szkript, amely letöltis és lefordítja a statikus Qt környezetet, amelyel később elő tudjuk állítani a statikusan fordított szoftvereinket. [link a szkripthez](https://sourceforge.net/p/qtlmovie/code/ci/master/tree/build/windows-build-qt-static.ps1?format=raw)
+
+A letöltés után futtassuk a szkriptet. A __fordítás néhány óráig eltart__, nekem egy i7-es gépen, SSD meghajtóval kb. 3 óra hosszan tartott a folyamat.
+
+#### Második lépés: Qt Creator beállítása
+A fordítás után a fejlesztői környezetnek is tudni kell, hogy statikus fordítást szeretnénk.
+A Qt Creatorban __Tools__ -> __Options__. A jobb oldali menüben __Build & Run__ -> __Qt Versions__ fül. Itt kattintsunk az __Add__ gombra. A felugró ablakban tallózuk ki az újonnan fordított statikus Qt könyvtárban található __qmake.exe__ fájlt, ez alapértelmezetetten a _C:\Qt\Static\5.5.1\bin_ könyvtárban található. Természetesen a verziószám változásával az _5.5.1_ rész változhat.
+A _Manual_ megjelölés alatt létrejövő új bejegyzést nevezzük el valami többet mondó néven, pl. _Qt 5.5.1 MinGW STATIC 32bit_.
+Ezután kattintsunk a __Kit__ fülre, majd az __Add__ gombra. A _Qt version_ sornál válasszuk ki az imént létrehozott _Qt 5.5.1 MinGW STATIC 32bit_ opciót. Itt is érdemes értelmes nevet adni az új bejegyzésnek. A többi beállításnak alapértelmezetten jónak kell lennie, tehát az __OK__ gomb megnyomásával készen is vagyunk.
+
+#### Harmadik lépés: Projekt beállítása
+Nyissuk meg a fordítani kívánt projektünket. Ezután a Qt Creatorban a jobb oldali oszlopban a __Projects__ fülön bal felső sarokban kattintsunk az __Add Kit__ feliratú gombra. A lenyíló menüből válaszuk a statikus verziót, amit az imént hoztunk létre. A felső sorban, az Add Kit gomb mellett megjelenik az új fordítási lehetőség,a melyre rákattintva elérhetjük a beállításait. Érdemes lehet a _Build directory_ bejegyzést módosítani, ide fogja fordítani a programunkat.
+Mindezek után a Qt Creator bal alsó sarkában a fordítás céljánál kiválasztjuk a statikus release módot és a programunk fordítás után már bármely más windows rendszeren használható lesz dll fájlok nélkül. 
+
+Érdemes megjegyezni, hogy a debug módban fordított statikus programok mérete __több 100 MB__ méretű lehet, mivel a debug során nagyon sok felesleges kódsor is fordításra kerül. Érdemes ilyenkor csak release módban fordítani.
